@@ -34,14 +34,14 @@ BEIJING_MINUS_SYSTEM_HOURS = 6  # 18:00 system -> 00:00 Beijing
 # CONFIG (in-repo text file)
 # =========================
 # The repo contains a text file 'config.txt' that controls:
-# - SIMULATION: on/off
-# - SIM_MINUTE: 0-59 (only used when SIMULATION=on)
+# - SIMULATION: 0/1
+# - SIM_MINUTE: 0-59 (only used when SIMULATION=1)
 # - COOKIE_VALUE: value for cookie 'new_bbs_serviceToken'
 # - START_BEFORE_MINUTES: how many minutes before "China midnight" to start sending requests
 # - INTERVAL_SECONDS: time between request launches (parallel scheduler)
 #
 # File format (key=value, one per line; # comments allowed):
-#   SIMULATION=off
+#   SIMULATION=0
 #   SIM_MINUTE=0
 #   COOKIE_VALUE=...
 #   START_BEFORE_MINUTES=60
@@ -52,11 +52,24 @@ CONFIG_FILE = "config.txt"
 def read_config(path: str = CONFIG_FILE) -> dict:
     cfg = {
         "SIMULATION": False,
-        "SIM_MINUTE": 0,
+        # Simulation: treat a point in the near future as "China midnight".
+        # The simulated midnight will be now + SIM_MIDNIGHT_AFTER_SECONDS.
+        "SIM_MIDNIGHT_AFTER_SECONDS": 120.0,
+
         "COOKIE_VALUE": "",
-        "START_BEFORE_MINUTES": 60,
+
+        # Start sending requests this many seconds before "China midnight".
+        "SEND_START_BEFORE_SECONDS": 3600.0,
+
+        # Parallel launch cadence.
         "INTERVAL_SECONDS": 1.0,
+
+        # How long to keep launching requests in the main phase before stopping.
         "RUN_LIMIT_SECONDS": 3.0,
+
+        # Backward-compat (old keys):
+        "SIM_MINUTE": 0,
+        "START_BEFORE_MINUTES": 60,
     }
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -69,19 +82,29 @@ def read_config(path: str = CONFIG_FILE) -> dict:
                 k, v = [x.strip() for x in line.split("=", 1)]
                 k = k.upper()
                 if k == "SIMULATION":
-                    cfg["SIMULATION"] = v.lower() in ("1", "true", "yes", "on", "enabled")
-                elif k == "SIM_MINUTE":
+                    cfg["SIMULATION"] = v.strip() == "1"
+                elif k == "SIM_MIDNIGHT_AFTER_SECONDS":
+                    try:
+                        cfg["SIM_MIDNIGHT_AFTER_SECONDS"] = float(v)
+                    except ValueError:
+                        pass
+                elif k == "SEND_START_BEFORE_SECONDS":
+                    try:
+                        cfg["SEND_START_BEFORE_SECONDS"] = float(v)
+                    except ValueError:
+                        pass
+                elif k == "SIM_MINUTE":  # backward-compat
                     try:
                         cfg["SIM_MINUTE"] = int(v)
                     except ValueError:
                         pass
-                elif k == "COOKIE_VALUE":
-                    cfg["COOKIE_VALUE"] = v
-                elif k == "START_BEFORE_MINUTES":
+                elif k == "START_BEFORE_MINUTES":  # backward-compat
                     try:
                         cfg["START_BEFORE_MINUTES"] = int(float(v))
                     except ValueError:
                         pass
+                elif k == "COOKIE_VALUE":
+                    cfg["COOKIE_VALUE"] = v
                 elif k == "INTERVAL_SECONDS":
                     try:
                         cfg["INTERVAL_SECONDS"] = float(v)
@@ -95,18 +118,59 @@ def read_config(path: str = CONFIG_FILE) -> dict:
     except FileNotFoundError:
         pass
 
-    # normalize & clamp
-    m = cfg.get("SIM_MINUTE", 0)
-    cfg["SIM_MINUTE"] = 0 if m < 0 else 59 if m > 59 else m
+    # normalize & clamp (seconds-based)
+    # Backward-compat handling:
+    # - If the user only provided START_BEFORE_MINUTES, convert it to seconds.
+    sb_minutes = cfg.get("START_BEFORE_MINUTES", 60)
+    try:
+        sb_minutes = int(sb_minutes)
+    except Exception:
+        sb_minutes = 60
+    if sb_minutes < 0:
+        sb_minutes = 0
+    if sb_minutes > 24 * 60:
+        sb_minutes = 24 * 60
+    cfg["START_BEFORE_MINUTES"] = int(sb_minutes)
 
-    sb = cfg.get("START_BEFORE_MINUTES", 60)
-    if sb < 0:
-        sb = 0
-    if sb > 24 * 60:
-        sb = 24 * 60
-    cfg["START_BEFORE_MINUTES"] = int(sb)
+    send_before = cfg.get("SEND_START_BEFORE_SECONDS", 3600.0)
+    try:
+        send_before = float(send_before)
+    except Exception:
+        send_before = 3600.0
+    # If SEND_START_BEFORE_SECONDS was left at default but START_BEFORE_MINUTES was changed, honor the minutes value.
+    if abs(send_before - 3600.0) < 1e-9 and sb_minutes != 60:
+        send_before = float(sb_minutes) * 60.0
+    if send_before < 0:
+        send_before = 0.0
+    if send_before > 24 * 3600:
+        send_before = float(24 * 3600)
+    cfg["SEND_START_BEFORE_SECONDS"] = float(send_before)
+
+    # Simulation target: by default, simulated midnight is now + SIM_MIDNIGHT_AFTER_SECONDS.
+    sim_after = cfg.get("SIM_MIDNIGHT_AFTER_SECONDS", 120.0)
+    try:
+        sim_after = float(sim_after)
+    except Exception:
+        sim_after = 120.0
+    if sim_after < 1.0:
+        sim_after = 1.0
+    if sim_after > 24 * 3600:
+        sim_after = float(24 * 3600)
+    cfg["SIM_MIDNIGHT_AFTER_SECONDS"] = float(sim_after)
+
+    # Keep SIM_MINUTE clamped for backward-compat.
+    m_ = cfg.get("SIM_MINUTE", 0)
+    try:
+        m_ = int(m_)
+    except Exception:
+        m_ = 0
+    cfg["SIM_MINUTE"] = 0 if m_ < 0 else 59 if m_ > 59 else m_
 
     itv = cfg.get("INTERVAL_SECONDS", 1.0)
+    try:
+        itv = float(itv)
+    except Exception:
+        itv = 1.0
     if itv <= 0:
         itv = 1.0
     if itv < 0.05:
@@ -137,21 +201,6 @@ def should_exit_for_push_when_not_simulating(sim_enabled: bool) -> bool:
     if sim_enabled:
         return False
     return ev == "push"
-
-
-cfg = read_config()
-sim_enabled = bool(cfg.get("SIMULATION"))
-sim_minute = int(cfg.get("SIM_MINUTE") or 0)
-cookie_value = str(cfg.get("COOKIE_VALUE") or "").strip()
-start_before_minutes = int(cfg.get("START_BEFORE_MINUTES") or 0)
-interval_seconds = float(cfg.get("INTERVAL_SECONDS") or 1.0)
-
-if not cookie_value:
-    print(col_rb + "Missing COOKIE_VALUE in config.txt" + Fore.RESET)
-    raise SystemExit(2)
-
-print(col_y + "Using COOKIE_VALUE from config.txt for [new_bbs_serviceToken]." + Fore.RESET)
-print(col_y + f"[Config] SIMULATION={'on' if sim_enabled else 'off'}, SIM_MINUTE={cfg.get('SIM_MINUTE')}, START_BEFORE_MINUTES={start_before_minutes}, INTERVAL_SECONDS={interval_seconds}" + Fore.RESET)
 
 
 feedtime = float(1400)  # ms
@@ -192,25 +241,55 @@ def system_target_time_for_simulated_beijing_midnight(sim_minute: int) -> dateti
 
 
 
-def wait_until_target_time(sim_enabled: bool, sim_minute: int, start_before_minutes: int):
+def wait_until_target_time(
+    sim_enabled: bool,
+    sim_midnight_after_seconds: float,
+    sim_minute_backward: int,
+    send_start_before_seconds: float,
+):
+    """
+    Wait until the moment when we should START SENDING the main requests.
+
+    - Normal mode: assume China midnight == 18:00 SYSTEM time.
+    - Simulation mode (seconds-based): treat (now + sim_midnight_after_seconds) as "China midnight".
+      Backward-compat: if sim_midnight_after_seconds is left at default (120s) but SIM_MINUTE is set (non-zero),
+      we simulate the old behavior by choosing the next time where SYSTEM minute == SIM_MINUTE at second 0.
+    """
     print(col_y + "\nBootloader unlock request" + Fore.RESET)
     print(col_g + "[Phase Shift Established]: " + Fore.RESET + f"{feed_time_shift:.2f} ms.")
-    print(col_g + "[Start Before]: " + Fore.RESET + f"{start_before_minutes} minute(s) before midnight.")
+    print(col_g + "[Send Start Before]: " + Fore.RESET + f"{send_start_before_seconds:.3f} second(s) before midnight.")
+
+    now_sys = datetime.now()
 
     if sim_enabled:
-        # Simulation: treat next time where SYSTEM minutes == sim_minute as "China midnight"
-        midnight_sys = system_target_time_for_simulated_beijing_midnight(sim_minute)
-        target_sys = midnight_sys - timedelta(minutes=start_before_minutes) - timedelta(seconds=feed_time_shift_s)
-        target_label = f"SIMULATED midnight@*: {sim_minute:02d}"
+        # Backward-compat: if SIM_MINUTE was provided and SIM_MIDNIGHT_AFTER_SECONDS looks untouched, honor old sim minute.
+        if abs(sim_midnight_after_seconds - 120.0) < 1e-9 and sim_minute_backward != 0:
+            midnight_sys = system_target_time_for_simulated_beijing_midnight(sim_minute_backward)
+            target_label = f"SIM (legacy minute) midnight@*: {sim_minute_backward:02d}"
+        else:
+            midnight_sys = now_sys + timedelta(seconds=float(sim_midnight_after_seconds))
+            # snap to next whole second for cleaner logs
+            midnight_sys = midnight_sys.replace(microsecond=0)
+            target_label = f"SIM midnight in +{sim_midnight_after_seconds:.3f}s"
+
+        target_sys = midnight_sys - timedelta(seconds=float(send_start_before_seconds)) - timedelta(seconds=feed_time_shift_s)
         target_bj = target_sys + timedelta(hours=BEIJING_MINUS_SYSTEM_HOURS)
         target_bj_label = "ASSUMED_CN (SYSTEM+6h)"
     else:
-        # Normal: Beijing midnight == 18:00 system
         midnight_sys = system_target_time_for_beijing_midnight()
-        target_sys = midnight_sys - timedelta(minutes=start_before_minutes) - timedelta(seconds=feed_time_shift_s)
-        target_label = "SYSTEM"
+        target_sys = midnight_sys - timedelta(seconds=float(send_start_before_seconds)) - timedelta(seconds=feed_time_shift_s)
+        target_label = "SYSTEM (18:00 -> CN midnight)"
         target_bj = target_sys + timedelta(hours=BEIJING_MINUS_SYSTEM_HOURS)
         target_bj_label = "ASSUMED_CN (SYSTEM+6h)"
+
+    if target_sys <= now_sys:
+        print(
+            col_y + "[Wait]: target time is in the past or now; starting immediately." + Fore.RESET
+        )
+        print(col_y + f"[Target]: {target_label}  (midnight_sys={midnight_sys.strftime('%Y-%m-%d %H:%M:%S')})" + Fore.RESET)
+        print("Do not exit")
+        print(f"It's time: {now_sys.strftime('%Y-%m-%d %H:%M:%S.%f')} (SYSTEM). Starting requests")
+        return midnight_sys
 
     print(
         col_g + "[Waiting until ... 🥱]: " + Fore.RESET +
@@ -231,6 +310,9 @@ def wait_until_target_time(sim_enabled: bool, sim_minute: int, start_before_minu
             break
         else:
             time.sleep(0.0001)
+
+    return midnight_sys
+
 
 
 def check_unlock_status(session, cookie_value, device_id):
@@ -374,12 +456,18 @@ def send_bl_auth_request(session, cookie_value, device_id):
 
 def main():
     cfg_local = read_config()
+
     sim_enabled = bool(cfg_local.get("SIMULATION"))
-    sim_minute = int(cfg_local.get("SIM_MINUTE") or 0)
+
     cookie_value = str(cfg_local.get("COOKIE_VALUE") or "").strip() or COOKIE_VALUE
-    start_before_minutes = int(cfg_local.get("START_BEFORE_MINUTES") or START_BEFORE_MINUTES)
+    sim_midnight_after_seconds = float(cfg_local.get("SIM_MIDNIGHT_AFTER_SECONDS") or 120.0)
+    send_start_before_seconds = float(cfg_local.get("SEND_START_BEFORE_SECONDS") or 3600.0)
     interval_seconds = float(cfg_local.get("INTERVAL_SECONDS") or INTERVAL_SECONDS)
     run_limit_seconds = float(cfg_local.get("RUN_LIMIT_SECONDS") or 3.0)
+
+    # Backward-compat (legacy simulation minute)
+    sim_minute_legacy = int(cfg_local.get("SIM_MINUTE") or 0)
+
     ev = github_event_name()
     if should_exit_for_push_when_not_simulating(sim_enabled):
         print(col_y + "[Info] Triggered by GitHub 'push' event and SIMULATION is OFF -> exiting." + Fore.RESET)
@@ -387,8 +475,10 @@ def main():
 
     if ev:
         print(col_b + f"[Info] GitHub event: {ev}" + Fore.RESET)
-    print(col_b + f"[Info] Simulation: {'ON' if sim_enabled else 'OFF'}" + Fore.RESET +
-          (f", SIM_MINUTE={sim_minute:02d}" if sim_enabled else ""))
+    print(
+        col_b + f"[Info] Simulation: {'ON' if sim_enabled else 'OFF'}" + Fore.RESET
+        + (f", SIM_MIDNIGHT_AFTER_SECONDS={sim_midnight_after_seconds}" if sim_enabled else "")
+    )
 
     device_id = generate_device_id()
     session = HTTP11Session()
@@ -415,7 +505,7 @@ def main():
             time.sleep(0.5)
 
         # Wait until the assumed "Beijing midnight" moment (18:00 system time), minus phase shift.
-        wait_until_target_time(sim_enabled, sim_minute, start_before_minutes)
+        wait_until_target_time(sim_enabled, sim_midnight_after_seconds, sim_minute_legacy, send_start_before_seconds)
 
         url = "https://sgp-api.buy.mi.com/bbs/api/global/apply/bl-auth"
         headers = {

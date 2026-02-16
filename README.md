@@ -4,25 +4,26 @@ This repository is packaged to run `hyperosunlocker.py` automatically on GitHub 
 (which is **23:00 China time, UTC+8**, i.e. one hour before midnight in China).
 
 ## Files
-- `hyperosunlocker.py` — the script (cookie is embedded inside the code).
+- `hyperosunlocker.py` — the script.
+- `config.txt` — in-repo configuration (including cookie value and all timing knobs).
 - `requirements.txt` — Python dependencies.
-- `.github/workflows/run-daily.yml` — scheduled workflow.
+- `.github/workflows/run-daily.yml` — GitHub Actions workflow.
 
-## How to use
-1. Create a new GitHub repository.
-2. Upload/extract all files from this ZIP into the repo root (keeping the folder structure).
-3. Commit & push.
-4. In GitHub → Actions, enable workflows if prompted.
-5. (Optional) Run manually via the **workflow_dispatch** button to test.
+## Config (seconds-based)
+
+Edit `config.txt`:
+
+- `COOKIE_VALUE` — value for the `new_bbs_serviceToken` cookie.
+- `SEND_START_BEFORE_SECONDS` — when to START launching main requests relative to "China midnight".
+- `INTERVAL_SECONDS` — how often to launch a new request (parallel mode).
+- `RUN_LIMIT_SECONDS` — how long to keep launching requests before stopping.
+- `SIMULATION` — `on/off`. When `on`, the script ignores real midnight and uses a simulated one.
+- `SIM_MIDNIGHT_AFTER_SECONDS` — only when `SIMULATION=1`: simulated midnight is `now + this many seconds`.
 
 Notes:
-- GitHub scheduled workflows are not guaranteed to start at an exact second; the script itself waits for midnight logic.
+- If `SIMULATION=0` and the workflow is triggered by a `push`, the script exits immediately (no requests).
+- Normal mode keeps the earlier assumption: **China midnight == 18:00 SYSTEM time** (SYSTEM is the runner's time).
 
+## Where to see output
 
-## Simulation mode
-
-- Edit `config.txt`.
-- `SIMULATION=on` enables simulation runs even on `push` events.
-- `SIM_MINUTE=NN` (0-59) sets the minute of the next hour that will be treated as "China midnight" for testing.
-
-When `SIMULATION=off`, pushes will trigger the workflow but the script will exit immediately.
+GitHub repo → **Actions** → select a workflow run → **run** job → **Run script** step.
