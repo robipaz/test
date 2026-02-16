@@ -29,7 +29,7 @@ BEIJING_MINUS_SYSTEM_HOURS = 6  # 18:00 system -> 00:00 Beijing
 # 2) Do NOT try to fetch the cookie automatically (and do not ask for it).
 #    Use a fixed cookie value.
 COOKIE_VALUE = (
-    "9CRa00QsgS3tiU9N%2BH054ReU0Pn7%2FwX9wzzhcYHaJiyTePDZL9bVcwdsXJqw5PQjkXoYHU0ELgzW%2BREN4rB%2BadDjXcwsRv02ts83imBsIMGI0fhSXjfbpgQC8Fu4Iw6uzqBAByQXVVzUqD3qTzJVwRwEApI9gHZ6RKovWQN7e%2Fo%3D"
+    "BeMdQ36v%2BdEniARencY7T7TXAgEkZG78oId4%2B8Ji3NfSGIJehUHjoajFYWgScy3oyiy3AFQKN9CGKXaTlTP59Iz897LyB0j0pUCXCyoVWCNPZXLB6As7fZ4n62vHyZZAEKsL1%2FfaMpn%2F%2B%2BRBqla2PfKW9sHsNP3%2BJK4OkysnMVc%3D"
 )
 
 
