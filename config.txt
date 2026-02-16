@@ -1,14 +1,15 @@
 # General config (in-repo)
 # Turn simulation on/off
-SIMULATION=on
+SIMULATION=off
 # Used only when SIMULATION=on (0-59): the next time the SYSTEM minute equals this value is treated as "China midnight"
-SIM_MINUTE=59
+SIM_MINUTE=0
 
 # Cookie value for 'new_bbs_serviceToken'
-COOKIE_VALUE=BeMdQ36v%2BdEniARencY7T7TXAgEkZG78oId4%2B8Ji3NfSGIJehUHjoajFYWgScy3oyiy3AFQKN9CGKXaTlTP59Iz897LyB0j0pUCXCyoVWCNPZXLB6As7fZ4n62vHyZZAEKsL1%2FfaMpn%2F%2B%2BRBqla2PfKW9sHsNP3%2BJK4OkysnMVc%3D
+COOKIE_VALUE=9CRa00QsgS3tiU9N%2BH054ReU0Pn7%2FwX9wzzhcYHaJiyTePDZL9bVcwdsXJqw5PQjkXoYHU0ELgzW%2BREN4rB%2BadDjXcwsRv02ts83imBsIMGI0fhSXjfbpgQC8Fu4Iw6uzqBAByQXVVzUqD3qTzJVwRwEApI9gHZ6RKovWQN7e%2Fo%3D
 
 # How many minutes before "China midnight" to start sending requests
 START_BEFORE_MINUTES=60
 
 # How often to launch a new request (seconds). Requests are launched in parallel.
-INTERVAL_SECONDS=0.2
+INTERVAL_SECONDS=1.0
+RUN_LIMIT_SECONDS=3

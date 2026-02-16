@@ -56,6 +56,7 @@ def read_config(path: str = CONFIG_FILE) -> dict:
         "COOKIE_VALUE": "",
         "START_BEFORE_MINUTES": 60,
         "INTERVAL_SECONDS": 1.0,
+        "RUN_LIMIT_SECONDS": 3.0,
     }
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -86,6 +87,11 @@ def read_config(path: str = CONFIG_FILE) -> dict:
                         cfg["INTERVAL_SECONDS"] = float(v)
                     except ValueError:
                         pass
+                elif k == "RUN_LIMIT_SECONDS":
+                    try:
+                        cfg["RUN_LIMIT_SECONDS"] = float(v)
+                    except ValueError:
+                        pass
     except FileNotFoundError:
         pass
 
@@ -106,6 +112,17 @@ def read_config(path: str = CONFIG_FILE) -> dict:
     if itv < 0.05:
         itv = 0.05
     cfg["INTERVAL_SECONDS"] = float(itv)
+
+    rl = cfg.get("RUN_LIMIT_SECONDS", 3.0)
+    try:
+        rl = float(rl)
+    except Exception:
+        rl = 3.0
+    if rl <= 0:
+        rl = 3.0
+    if rl > 600:
+        rl = 600.0
+    cfg["RUN_LIMIT_SECONDS"] = float(rl)
 
     return cfg
 
@@ -362,6 +379,7 @@ def main():
     cookie_value = str(cfg_local.get("COOKIE_VALUE") or "").strip() or COOKIE_VALUE
     start_before_minutes = int(cfg_local.get("START_BEFORE_MINUTES") or START_BEFORE_MINUTES)
     interval_seconds = float(cfg_local.get("INTERVAL_SECONDS") or INTERVAL_SECONDS)
+    run_limit_seconds = float(cfg_local.get("RUN_LIMIT_SECONDS") or 3.0)
     ev = github_event_name()
     if should_exit_for_push_when_not_simulating(sim_enabled):
         print(col_y + "[Info] Triggered by GitHub 'push' event and SIMULATION is OFF -> exiting." + Fore.RESET)
@@ -496,7 +514,7 @@ def main():
             while True:
                 now = time.monotonic()
                 elapsed = now - loop_start
-                if elapsed >= 3.0:
+                if elapsed >= run_limit_seconds:
                     print(col_yb + "\n[Time Limit]" + Fore.RESET + " 3 seconds elapsed -> stopping new sends.")
                     break
 
