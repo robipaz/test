@@ -4,6 +4,7 @@ import os
 import time
 import urllib3
 import json
+import threading
 from datetime import datetime, timedelta
 
 from colorama import init, Fore, Style
@@ -29,7 +30,7 @@ BEIJING_MINUS_SYSTEM_HOURS = 6  # 18:00 system -> 00:00 Beijing
 # 2) Do NOT try to fetch the cookie automatically (and do not ask for it).
 #    Use a fixed cookie value.
 COOKIE_VALUE = (
-    "BeMdQ36v%2BdEniARencY7T7TXAgEkZG78oId4%2B8Ji3NfSGIJehUHjoajFYWgScy3oyiy3AFQKN9CGKXaTlTP59Iz897LyB0j0pUCXCyoVWCNPZXLB6As7fZ4n62vHyZZAEKsL1%2FfaMpn%2F%2B%2BRBqla2PfKW9sHsNP3%2BJK4OkysnMVc%3D"
+    "9CRa00QsgS3tiU9N%2BH054ReU0Pn7%2FwX9wzzhcYHaJiyTePDZL9bVcwdsXJqw5PQjkXoYHU0ELgzW%2BREN4rB%2BadDjXcwsRv02ts83imBsIMGI0fhSXjfbpgQC8Fu4Iw6uzqBAByQXVVzUqD3qTzJVwRwEApI9gHZ6RKovWQN7e%2Fo%3D"
 )
 
 
@@ -364,113 +365,118 @@ def main():
             last_deadline_last_req = {}
             boundary_printed = False
 
-            while True:
-                request_counter += 1
-                print(col_bb + f"\n[Main Request #{request_counter}]" + Fore.RESET)
-                json_response, _raw_text, req_bj, resp_bj = send_bl_auth_request(session, cookie_value, device_id)
+            # Hard stop: run the main request loop for at most 3 seconds.
+            # (Per request: stop even if no deadline/date flip is observed.)
+            loop_start = time.monotonic()
+
+            # --- Concurrent request sending (per request) ---
+            # Send one request every 1 second, without waiting for the previous response.
+            # We keep a 3-second time limit for the whole main phase (already requested).
+            lock = threading.Lock()
+
+            def process_response(i: int, json_response: dict | None, req_bj: datetime | None, resp_bj: datetime | None, raw_text: str | None):
+                nonlocal last_deadline, last_deadline_last_req, boundary_printed
+
                 if json_response is None:
-                    continue
+                    return
 
                 try:
-                    code = json_response.get("code")
-                    data = json_response.get("data", {})
+                    code_val = json_response.get("code")
+                    data = json_response.get("data", {}) if isinstance(json_response, dict) else {}
+                except Exception:
+                    return
 
-
-
-                    if code == 0:
-                        apply_result = data.get("apply_result")
-                        if apply_result == 1:
-                            print(col_g + "[Status]: " + Fore.RESET + "Request approved, checking status")
-                            check_unlock_status(session, cookie_value, device_id)
-                        elif apply_result == 3:
-                            # Quota reached / asked to try again at the returned deadline.
-                            deadline_format = data.get("deadline_format") or "Not declared"
-
-                            # Track the moment the server's suggested retry-deadline flips to the next date.
-                            # We want:
-                            #   - last request that still returned the earlier deadline
-                            #   - first request that returned the later deadline
-                            current_deadline = str(deadline_format)
-
+                # Only track the "try again at <deadline>" style responses
+                if code_val == 0:
+                    apply_result = data.get("apply_result")
+                    if apply_result == 3:
+                        deadline_format = data.get("deadline_format") or "Not declared"
+                        with lock:
                             if last_deadline is None:
-                                last_deadline = current_deadline
-                                last_deadline_last_req = {
-                                    "i": request_counter,
-                                    "req_time": req_bj,
-                                    "resp_time": resp_bj,
-                                    "json": json_response,
-                                }
-                            elif current_deadline == last_deadline:
-                                last_deadline_last_req = {
-                                    "i": request_counter,
-                                    "req_time": req_bj,
-                                    "resp_time": resp_bj,
-                                    "json": json_response,
-                                }
-                            else:
-                                # Deadline changed (usually means we've crossed the server's day boundary).
-                                if not boundary_printed:
-                                    print(col_yb + "\n[Boundary Detected]" + Fore.RESET)
-                                    print(col_y + "[Last request for earlier deadline]: " + Fore.RESET +
-                                          f"deadline={last_deadline}, i={last_deadline_last_req.get('i')}")
-                                    print(col_y + "  req_time=" + Fore.RESET + f"{last_deadline_last_req.get('req_time')}")
-                                    print(col_y + "  resp_time=" + Fore.RESET + f"{last_deadline_last_req.get('resp_time')}")
-                                    print(col_y + "  json=" + Fore.RESET + json.dumps(last_deadline_last_req.get('json'), ensure_ascii=False))
+                                last_deadline = deadline_format
+                            # If deadline changed, print boundary info (only once)
+                            if (deadline_format != last_deadline) and (not boundary_printed):
+                                print(col_yb + "\n[Boundary Detected]" + Fore.RESET + f" {last_deadline} -> {deadline_format}")
 
-                                    print(col_y + "[First request for later deadline]: " + Fore.RESET +
-                                          f"deadline={current_deadline}, i={request_counter}")
-                                    print(col_y + "  req_time=" + Fore.RESET + f"{req_bj}")
-                                    print(col_y + "  resp_time=" + Fore.RESET + f"{resp_bj}")
-                                    print(col_y + "  json=" + Fore.RESET + json.dumps(json_response, ensure_ascii=False))
-                                    boundary_printed = True
+                                print(col_y + "[Last request for earlier deadline]:" + Fore.RESET + f" deadline={last_deadline}")
+                                print(col_y + "  i=" + Fore.RESET + f"{last_deadline_last_req.get('i')}")
+                                print(col_y + "  req_time=" + Fore.RESET + f"{last_deadline_last_req.get('req_time')}")
+                                print(col_y + "  resp_time=" + Fore.RESET + f"{last_deadline_last_req.get('resp_time')}")
+                                print(col_y + "  json=" + Fore.RESET + json.dumps(last_deadline_last_req.get('json'), ensure_ascii=False))
 
-                                # Update tracking to new deadline so future flips can also be observed.
-                                last_deadline = current_deadline
-                                last_deadline_last_req = {
-                                    "i": request_counter,
-                                    "req_time": req_bj,
-                                    "resp_time": resp_bj,
-                                    "json": json_response,
-                                }
+                                print(col_y + "[First request for later deadline]:" + Fore.RESET + f" deadline={deadline_format}")
+                                print(col_y + "  i=" + Fore.RESET + f"{i}")
+                                print(col_y + "  req_time=" + Fore.RESET + f"{req_bj}")
+                                print(col_y + "  resp_time=" + Fore.RESET + f"{resp_bj}")
+                                print(col_y + "  json=" + Fore.RESET + json.dumps(json_response, ensure_ascii=False))
 
-                            print(
-                                col_g + "[Status]: " + Fore.RESET +
-                                f"Quota reached. Server suggests retry at {deadline_format} (Month/Day)."
-                            )
-                            # DO NOT exit; keep running so we can observe the deadline flip.
-                            time.sleep(0.2)
-                        elif apply_result == 4:
+                                boundary_printed = True
 
-                            deadline_format = data.get("deadline_format", "Not declared")
-                            print(
-                                col_g + "[Status]: " + Fore.RESET +
-                                f"Account blocked untill {deadline_format} (Month/Day)."
-                            )
-                            exit()
+                            # Update last seen for current deadline
+                            last_deadline = deadline_format
+                            last_deadline_last_req = {
+                                "i": i,
+                                "req_time": str(req_bj),
+                                "resp_time": str(resp_bj),
+                                "json": json_response,
+                            }
 
-                    elif code == 100001:
-                        print(col_g + "[Status]: " + Fore.RESET + "Request rejected")
-                        print(col_g + "[Response]: " + Fore.RESET + f"{json_response}")
+                        print(col_g + "[Status]: " + Fore.RESET + f"Quota/Retry until {deadline_format} (Month/Day).")
+                        return
 
-                    elif code == 100003:
-                        print(col_g + "[Status]: " + Fore.RESET + "Maybe it was approved, check status")
-                        print(col_g + "[Response]: " + Fore.RESET + f"{json_response}")
+                    if apply_result == 1:
+                        print(col_g + "[Status]: " + Fore.RESET + "Request approved, checking status")
                         check_unlock_status(session, cookie_value, device_id)
+                        return
 
-                    elif code is not None:
-                        print(col_g + "[Status]: " + Fore.RESET + f"Unknown status: {code}")
-                        print(col_g + "[Response]: " + Fore.RESET + f"{json_response}")
+                # For non-quota responses, keep the existing visibility
+                if code_val == 100004:
+                    print(col_r + "[Error] Expired Cookie ... try again." + Fore.RESET)
+                    return
 
-                    else:
-                        print(col_g + "[Error]: " + Fore.RESET + "Response without status code")
-                        print(col_g + "[Response]: " + Fore.RESET + f"{json_response}")
+                # Print generic status for debugging
+                print(col_g + "[Response]: " + Fore.RESET + json.dumps(json_response, ensure_ascii=False))
 
-                except json.JSONDecodeError:
-                    print(col_g + "[Error]: " + Fore.RESET + "JSON decode error")
-                    print(col_g + "[Server Response]: " + Fore.RESET + f"{_raw_text}")
-                except Exception as e:
-                    print(col_g + "[Error response processing]: " + Fore.RESET + f"{e}")
-                    continue
+            def worker(i: int):
+                print(col_bb + f"\n[Main Request #{i}]" + Fore.RESET)
+                json_response, raw_text, req_bj, resp_bj = send_bl_auth_request(session, cookie_value, device_id)
+                process_response(i, json_response, req_bj, resp_bj, raw_text)
+
+            # Schedule sends: one per second, independent of response time
+            threads: list[threading.Thread] = []
+            request_counter = 0
+            next_send = time.monotonic()
+
+            while True:
+                now = time.monotonic()
+                elapsed = now - loop_start
+                if elapsed >= 3.0:
+                    print(col_yb + "\n[Time Limit]" + Fore.RESET + " 3 seconds elapsed -> stopping new sends.")
+                    break
+
+                if now >= next_send:
+                    request_counter += 1
+                    t = threading.Thread(target=worker, args=(request_counter,), daemon=True)
+                    threads.append(t)
+                    t.start()
+                    next_send += 1.0
+                else:
+                    time.sleep(min(0.05, next_send - now))
+
+            # Wait briefly for in-flight requests to finish so logs are complete
+            join_deadline = time.monotonic() + 10.0
+            for t in threads:
+                remaining = join_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                t.join(timeout=remaining)
+
+            if not boundary_printed and last_deadline is not None and last_deadline_last_req:
+                print(col_y + "\n[No boundary detected within time limit]." + Fore.RESET)
+                print(col_y + "[Last observed retry deadline]: " + Fore.RESET + f"deadline={last_deadline}, i={last_deadline_last_req.get('i')}")
+                print(col_y + "  req_time=" + Fore.RESET + f"{last_deadline_last_req.get('req_time')}")
+                print(col_y + "  resp_time=" + Fore.RESET + f"{last_deadline_last_req.get('resp_time')}")
+                print(col_y + "  json=" + Fore.RESET + json.dumps(last_deadline_last_req.get('json'), ensure_ascii=False))
 
         except Exception as e:
             print(col_g + "[Request Error]: " + Fore.RESET + f"{e}")
