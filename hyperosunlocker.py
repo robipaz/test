@@ -95,9 +95,9 @@ def should_exit_for_push_when_not_simulating(sim_enabled: bool) -> bool:
 
 print(col_y + "Using fixed cookie value for [new_bbs_serviceToken]." + Fore.RESET)
 
-feedtime = float(1400)  # ms
+feedtime = float(2400)  # ms
 feed_time_shift = feedtime
-feed_time_shift_s = feed_time_shift / 1000.0
+feed_time_shift_s = feed_time_shift / 100.0
 
 
 def generate_device_id():
