@@ -1,0 +1,31 @@
+name: Run HyperOS Unlocker (Daily)
+
+on:
+  push: {}
+  schedule:
+    # 15:00 UTC == 23:00 China (UTC+8): one hour before midnight in China.
+    - cron: "0 15 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run script
+        run: |
+          python3 hyperosunlocker.py
