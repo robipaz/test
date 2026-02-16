@@ -356,7 +356,12 @@ def send_bl_auth_request(session, cookie_value, device_id):
 
 
 def main():
-    sim_enabled, sim_minute = read_config()
+    cfg_local = read_config()
+    sim_enabled = bool(cfg_local.get("SIMULATION"))
+    sim_minute = int(cfg_local.get("SIM_MINUTE") or 0)
+    cookie_value = str(cfg_local.get("COOKIE_VALUE") or "").strip() or COOKIE_VALUE
+    start_before_minutes = int(cfg_local.get("START_BEFORE_MINUTES") or START_BEFORE_MINUTES)
+    interval_seconds = float(cfg_local.get("INTERVAL_SECONDS") or INTERVAL_SECONDS)
     ev = github_event_name()
     if should_exit_for_push_when_not_simulating(sim_enabled):
         print(col_y + "[Info] Triggered by GitHub 'push' event and SIMULATION is OFF -> exiting." + Fore.RESET)
@@ -369,8 +374,7 @@ def main():
 
     device_id = generate_device_id()
     session = HTTP11Session()
-    cookie_value = COOKIE_VALUE
-
+    # cookie_value loaded from config.txt (or fallback)
     if check_unlock_status(session, cookie_value, device_id):
         # ---------------------------
         # Preflight test (per request)
