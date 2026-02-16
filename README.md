@@ -21,7 +21,7 @@ Notes:
 
 ## Simulation mode
 
-- Edit `simulation_config.txt`.
+- Edit `config.txt`.
 - `SIMULATION=on` enables simulation runs even on `push` events.
 - `SIM_MINUTE=NN` (0-59) sets the minute of the next hour that will be treated as "China midnight" for testing.
 
