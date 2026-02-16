@@ -1,5 +1,6 @@
 import hashlib
 import random
+import os
 import time
 import urllib3
 import json
@@ -31,6 +32,66 @@ COOKIE_VALUE = (
     "9CRa00QsgS3tiU9N%2BH054ReU0Pn7%2FwX9wzzhcYHaJiyTePDZL9bVcwdsXJqw5PQjkXoYHU0ELgzW%2BREN4rB%2BadDjXcwsRv02ts83imBsIMGI0fhSXjfbpgQC8Fu4Iw6uzqBAByQXVVzUqD3qTzJVwRwEApI9gHZ6RKovWQN7e%2Fo%3D"
 )
 
+
+# =========================
+# SIMULATION MODE (per request)
+# =========================
+# The repo contains a text file 'simulation_config.txt' that controls simulation runs.
+# - If SIMULATION=on, the script ignores the real China-midnight mapping and instead
+#   treats the next time where SYSTEM minutes == SIM_MINUTE as "China midnight".
+# - If SIMULATION=off and the workflow was triggered by a code change (GitHub push event),
+#   the script exits immediately (so pushes won't send requests by accident).
+#
+# File format (key=value, one per line; # comments allowed):
+#   SIMULATION=off
+#   SIM_MINUTE=0
+
+SIMULATION_CONFIG_FILE = "simulation_config.txt"
+
+def read_simulation_config(path: str = SIMULATION_CONFIG_FILE) -> tuple[bool, int]:
+    sim_enabled = False
+    sim_minute = 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                k, v = [x.strip() for x in line.split("=", 1)]
+                k = k.upper()
+                if k == "SIMULATION":
+                    sim_enabled = v.lower() in ("1", "true", "yes", "on", "enabled")
+                elif k == "SIM_MINUTE":
+                    try:
+                        sim_minute = int(v)
+                    except ValueError:
+                        pass
+    except FileNotFoundError:
+        # default: simulation off
+        pass
+
+    # clamp minute
+    if sim_minute < 0:
+        sim_minute = 0
+    if sim_minute > 59:
+        sim_minute = 59
+    return sim_enabled, sim_minute
+
+
+def github_event_name() -> str:
+    # In GitHub Actions this will be set (e.g., 'schedule', 'push', 'workflow_dispatch').
+    return os.environ.get("GITHUB_EVENT_NAME", "").strip().lower()
+
+
+def should_exit_for_push_when_not_simulating(sim_enabled: bool) -> bool:
+    ev = github_event_name()
+    if sim_enabled:
+        return False
+    # If triggered by repo change (push), exit immediately.
+    return ev == "push"
+
 print(col_y + "Using fixed cookie value for [new_bbs_serviceToken]." + Fore.RESET)
 
 feedtime = float(1400)  # ms
@@ -61,20 +122,38 @@ def system_target_time_for_beijing_midnight():
     return target
 
 
-def wait_until_target_time():
+def system_target_time_for_simulated_beijing_midnight(sim_minute: int) -> datetime:
+    """Return the next SYSTEM datetime where minutes == sim_minute (seconds=0), used as simulated 'China midnight'."""
+    now_sys = datetime.now()
+    candidate = now_sys.replace(second=0, microsecond=0, minute=sim_minute)
+    if candidate <= now_sys:
+        candidate += timedelta(hours=1)
+    return candidate
+
+
+
+def wait_until_target_time(sim_enabled: bool, sim_minute: int):
     print(col_y + "\nBootloader unlock request" + Fore.RESET)
     print(col_g + "[Phase Shift Established]: " + Fore.RESET + f"{feed_time_shift:.2f} ms.")
 
-    # Start slightly BEFORE the assumed Beijing midnight (18:00 system) by feed_time_shift_s seconds
-    target_sys = system_target_time_for_beijing_midnight() - timedelta(seconds=feed_time_shift_s)
-
-    # For display, show both system target and the corresponding assumed Beijing time
-    target_bj = target_sys + timedelta(hours=BEIJING_MINUS_SYSTEM_HOURS)
+    if sim_enabled:
+        # Simulation: treat next time where SYSTEM minutes == sim_minute as "China midnight"
+        simulated_midnight_sys = system_target_time_for_simulated_beijing_midnight(sim_minute)
+        target_sys = simulated_midnight_sys - timedelta(seconds=feed_time_shift_s)
+        print(col_y + f"[Simulation ON]: SIM_MINUTE={sim_minute:02d}. " + Fore.RESET +
+              "Treating the next SYSTEM time with that minute value as 'China midnight'.")
+        target_bj = target_sys  # not meaningful in simulation; keep for display alignment
+        target_bj_label = "SIMULATED"
+    else:
+        # Normal: Start slightly BEFORE the assumed Beijing midnight (18:00 system)
+        target_sys = system_target_time_for_beijing_midnight() - timedelta(seconds=feed_time_shift_s)
+        target_bj = target_sys + timedelta(hours=BEIJING_MINUS_SYSTEM_HOURS)
+        target_bj_label = "ASSUMED UTC+8"
 
     print(
         col_g + "[Waiting until ... 🥱]: " + Fore.RESET +
         f"{target_sys.strftime('%Y-%m-%d %H:%M:%S.%f')} (SYSTEM) "
-        f"== {target_bj.strftime('%Y-%m-%d %H:%M:%S.%f')} (ASSUMED UTC+8)"
+        f"== {target_bj.strftime('%Y-%m-%d %H:%M:%S.%f')} ({target_bj_label})"
     )
     print("Do not exit")
 
@@ -91,6 +170,7 @@ def wait_until_target_time():
             break
         else:
             time.sleep(0.0001)
+
 
 
 def check_unlock_status(session, cookie_value, device_id):
@@ -233,6 +313,17 @@ def send_bl_auth_request(session, cookie_value, device_id):
 
 
 def main():
+    sim_enabled, sim_minute = read_simulation_config()
+    ev = github_event_name()
+    if should_exit_for_push_when_not_simulating(sim_enabled):
+        print(col_y + "[Info] Triggered by GitHub 'push' event and SIMULATION is OFF -> exiting." + Fore.RESET)
+        return
+
+    if ev:
+        print(col_b + f"[Info] GitHub event: {ev}" + Fore.RESET)
+    print(col_b + f"[Info] Simulation: {'ON' if sim_enabled else 'OFF'}" + Fore.RESET +
+          (f", SIM_MINUTE={sim_minute:02d}" if sim_enabled else ""))
+
     device_id = generate_device_id()
     session = HTTP11Session()
     cookie_value = COOKIE_VALUE
@@ -259,7 +350,7 @@ def main():
             time.sleep(0.5)
 
         # Wait until the assumed "Beijing midnight" moment (18:00 system time), minus phase shift.
-        wait_until_target_time()
+        wait_until_target_time(sim_enabled, sim_minute)
 
         url = "https://sgp-api.buy.mi.com/bbs/api/global/apply/bl-auth"
         headers = {
