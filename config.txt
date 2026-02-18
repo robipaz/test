@@ -13,13 +13,13 @@ SIM_MIDNIGHT_AFTER_SECONDS=120
 COOKIE_VALUE=BeMdQ36v%2BdEniARencY7T7TXAgEkZG78oId4%2B8Ji3NfSGIJehUHjoajFYWgScy3oyiy3AFQKN9CGKXaTlTP59Iz897LyB0j0pUCXCyoVWCNPZXLB6As7fZ4n62vHyZZAEKsL1%2FfaMpn%2F%2B%2BRBqla2PfKW9sHsNP3%2BJK4OkysnMVc%3D
 # Main-phase scheduling (seconds):
 # How many seconds BEFORE "China midnight" to start launching the main requests.
-SEND_START_BEFORE_SECONDS=3600
+SEND_START_BEFORE_SECONDS=3
 
 # How often to launch a NEW request (seconds). Requests are launched in parallel.
-INTERVAL_SECONDS=1.0
+INTERVAL_SECONDS=0.05
 
 # How long (seconds) to keep launching main requests before stopping.
-RUN_LIMIT_SECONDS=3
+RUN_LIMIT_SECONDS=4
 
 # Backward-compat keys (optional; not needed anymore):
 # SIM_MINUTE=0
