@@ -197,10 +197,37 @@ def github_event_name() -> str:
 
 
 def should_exit_for_push_when_not_simulating(sim_enabled: bool) -> bool:
+    """ 
+    If triggered by a code change (push) and SIMULATION is OFF, we normally exit to avoid
+    unintended real requests.
+
+    **Exception (requested):** if the push happens within 1.5 hours *before* the assumed
+    China midnight, behave like a scheduled run (keep running and wait for the send window).
+    """
     ev = github_event_name()
     if sim_enabled:
         return False
-    return ev == "push"
+    if ev != "push":
+        return False
+
+    # Allow push-triggered runs close to midnight (<= 1.5h before midnight).
+    try:
+        PUSH_GRACE_WINDOW_SECONDS = 90 * 60  # 1.5 hours
+        now_sys = datetime.now()
+        midnight_sys = system_target_time_for_beijing_midnight()
+        seconds_to_midnight = (midnight_sys - now_sys).total_seconds()
+        if 0 <= seconds_to_midnight <= PUSH_GRACE_WINDOW_SECONDS:
+            print(
+                col_y
+                + f"[Info] Push-triggered run within {PUSH_GRACE_WINDOW_SECONDS:.0f}s of assumed China midnight -> continuing as scheduled run."
+                + Fore.RESET
+            )
+            return False
+    except Exception:
+        # If we can't compute safely, fail closed (exit).
+        return True
+
+    return True
 
 
 feedtime = float(1400)  # ms
