@@ -10,7 +10,7 @@ SIMULATION=0
 SIM_MIDNIGHT_AFTER_SECONDS=120
 
 # Cookie value for 'new_bbs_serviceToken'
-COOKIE_VALUE=Oo3ifmP7LwG8IYmIIz1BKlBdXn3f35zEujUqVnZTYw9vlEW0p0ptk%2BnzXj7HyMP9UVDj6RS5WOGM24jVpRZ30vpGhQlqtd%2BSqaEa2a%2BKziESXF6dbLfkIOlkFn1x56BDdQ5PQd9oKal4AYIiyGkPp4wYIzPBVdfGav%2F6DJ8PkaA%3Ds
+COOKIE_VALUE=Oo3ifmP7LwG8IYmIIz1BKlBdXn3f35zEujUqVnZTYw9vlEW0p0ptk%2BnzXj7HyMP9UVDj6RS5WOGM24jVpRZ30vpGhQlqtd%2BSqaEa2a%2BKziESXF6dbLfkIOlkFn1x56BDdQ5PQd9oKal4AYIiyGkPp4wYIzPBVdfGav%2F6DJ8PkaA%3D
 
 # Main-phase scheduling (seconds):
 # How many seconds BEFORE "China midnight" to start launching the main requests.
