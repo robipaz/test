@@ -213,9 +213,9 @@ def should_exit_for_push_when_not_simulating(sim_enabled: bool) -> bool:
     # Allow push-triggered runs close to midnight (<= 1.5h before midnight).
     try:
         PUSH_GRACE_WINDOW_SECONDS = 90 * 60  # 1.5 hours
-        now_sys = datetime.now()
-        midnight_sys = system_target_time_for_beijing_midnight()
-        seconds_to_midnight = (midnight_sys - now_sys).total_seconds()
+        now_utc = datetime.utcnow()
+        midnight_utc = china_midnight_utc_target(now_utc)
+        seconds_to_midnight = (midnight_utc - now_utc).total_seconds()
         if 0 <= seconds_to_midnight <= PUSH_GRACE_WINDOW_SECONDS:
             print(
                 col_y
@@ -258,6 +258,21 @@ def system_target_time_for_beijing_midnight():
     return target
 
 
+def china_midnight_utc_target(now_utc=None):
+    """
+    Returns the next China (UTC+8) midnight as a UTC datetime.
+
+    China midnight (00:00 in UTC+8) corresponds to 16:00 UTC of the previous/ same UTC day.
+    So the next China midnight in UTC is the next occurrence of 16:00:00 UTC.
+    """
+    if now_utc is None:
+        now_utc = datetime.utcnow()
+    target = now_utc.replace(hour=16, minute=0, second=0, microsecond=0)
+    if now_utc >= target:
+        target += timedelta(days=1)
+    return target
+
+
 def system_target_time_for_simulated_beijing_midnight(sim_minute: int) -> datetime:
     """Return the next SYSTEM datetime where minutes == sim_minute (seconds=0), used as simulated 'China midnight'."""
     now_sys = datetime.now()
@@ -265,6 +280,7 @@ def system_target_time_for_simulated_beijing_midnight(sim_minute: int) -> dateti
     if candidate <= now_sys:
         candidate += timedelta(hours=1)
     return candidate
+
 
 
 
@@ -277,71 +293,92 @@ def wait_until_target_time(
     """
     Wait until the moment when we should START SENDING the main requests.
 
-    - Normal mode: assume China midnight == 18:00 SYSTEM time.
-    - Simulation mode (seconds-based): treat (now + sim_midnight_after_seconds) as "China midnight".
-      Backward-compat: if sim_midnight_after_seconds is left at default (120s) but SIM_MINUTE is set (non-zero),
-      we simulate the old behavior by choosing the next time where SYSTEM minute == SIM_MINUTE at second 0.
+    Timing model (portable across machines/runner timezones):
+
+    - Normal mode (SIMULATION=0):
+        Compute *real* China midnight (00:00 in UTC+8) in UTC. That moment is 16:00:00 UTC.
+        We wait until: (China_midnight_utc - SEND_START_BEFORE_SECONDS - phase_shift).
+
+    - Simulation mode (SIMULATION=1, seconds-based):
+        Treat (now + SIM_MIDNIGHT_AFTER_SECONDS) as "China midnight" and wait until:
+        (sim_midnight - SEND_START_BEFORE_SECONDS - phase_shift).
+
+    Backward-compat (legacy):
+        If SIM_MIDNIGHT_AFTER_SECONDS is not provided but SIM_MINUTE is present, we emulate
+        a "midnight" at the next local time where minute == SIM_MINUTE (mostly for older setups).
     """
-    print(col_y + "\nBootloader unlock request" + Fore.RESET)
-    print(col_g + "[Phase Shift Established]: " + Fore.RESET + f"{feed_time_shift:.2f} ms.")
-    print(col_g + "[Send Start Before]: " + Fore.RESET + f"{send_start_before_seconds:.3f} second(s) before midnight.")
+    feed_time_shift_s = FEEDTIME_MS / 1000.0
 
-    now_sys = datetime.now()
-
+    # --- Simulation mode (seconds-based) ---
     if sim_enabled:
-        # Backward-compat: if SIM_MINUTE was provided and SIM_MIDNIGHT_AFTER_SECONDS looks untouched, honor old sim minute.
-        if abs(sim_midnight_after_seconds - 120.0) < 1e-9 and sim_minute_backward != 0:
-            midnight_sys = system_target_time_for_simulated_beijing_midnight(sim_minute_backward)
-            target_label = f"SIM (legacy minute) midnight@*: {sim_minute_backward:02d}"
+        now_sys = datetime.now()
+
+        # Legacy fallback: if user didn't set SIM_MIDNIGHT_AFTER_SECONDS meaningfully
+        # but provided SIM_MINUTE, simulate midnight at the next time where minute==SIM_MINUTE.
+        use_legacy = (sim_midnight_after_seconds is None) or (float(sim_midnight_after_seconds) <= 0 and sim_minute_backward is not None)
+        if use_legacy:
+            target_minute = int(sim_minute_backward) % 60
+            # next occurrence in local time where minute matches
+            base = now_sys.replace(second=0, microsecond=0)
+            candidate = base.replace(minute=target_minute)
+            if candidate <= base:
+                candidate += timedelta(hours=1)
+            midnight_sys = candidate  # treat this as "midnight"
+            target_label = f"SIM midnight@*: {target_minute:02d} (legacy)"
         else:
-            midnight_sys = now_sys + timedelta(seconds=float(sim_midnight_after_seconds))
-            # snap to next whole second for cleaner logs
-            midnight_sys = midnight_sys.replace(microsecond=0)
-            target_label = f"SIM midnight in +{sim_midnight_after_seconds:.3f}s"
+            midnight_sys = (now_sys + timedelta(seconds=float(sim_midnight_after_seconds))).replace(microsecond=0)
+            target_label = f"SIM midnight in +{float(sim_midnight_after_seconds):.3f}s"
 
         target_sys = midnight_sys - timedelta(seconds=float(send_start_before_seconds)) - timedelta(seconds=feed_time_shift_s)
-        target_bj = target_sys + timedelta(hours=BEIJING_MINUS_SYSTEM_HOURS)
-        target_bj_label = "ASSUMED_CN (SYSTEM+6h)"
-    else:
-        midnight_sys = system_target_time_for_beijing_midnight()
-        target_sys = midnight_sys - timedelta(seconds=float(send_start_before_seconds)) - timedelta(seconds=feed_time_shift_s)
-        target_label = "SYSTEM (18:00 -> CN midnight)"
-        target_bj = target_sys + timedelta(hours=BEIJING_MINUS_SYSTEM_HOURS)
-        target_bj_label = "ASSUMED_CN (SYSTEM+6h)"
 
-    if target_sys <= now_sys:
+        print(col_g + "[Phase Shift Established]: " + Fore.RESET + f"{FEEDTIME_MS:.2f} ms.")
+        print(col_g + "[Start Before]: " + Fore.RESET + f"{float(send_start_before_seconds):.3f} second(s) before midnight.")
         print(
-            col_y + "[Wait]: target time is in the past or now; starting immediately." + Fore.RESET
+            col_g + "[Waiting until ... 🥱]: " + Fore.RESET +
+            f"{target_sys.strftime('%Y-%m-%d %H:%M:%S.%f')} (SYSTEM)"
         )
         print(col_y + f"[Target]: {target_label}  (midnight_sys={midnight_sys.strftime('%Y-%m-%d %H:%M:%S')})" + Fore.RESET)
         print("Do not exit")
-        print(f"It's time: {now_sys.strftime('%Y-%m-%d %H:%M:%S.%f')} (SYSTEM). Starting requests")
-        return midnight_sys
 
+        while True:
+            now_sys = datetime.now()
+            time_diff = (target_sys - now_sys).total_seconds()
+            if time_diff <= 0:
+                break
+            time.sleep(min(0.25, max(0.01, time_diff)))
+
+        print(f"It's time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')} (SYSTEM). Starting requests")
+        return
+
+    # --- Normal mode: real China midnight using UTC ---
+    now_utc = datetime.utcnow()
+    midnight_utc = china_midnight_utc_target(now_utc)
+    target_utc = midnight_utc - timedelta(seconds=float(send_start_before_seconds)) - timedelta(seconds=feed_time_shift_s)
+
+    # Estimate system offset from UTC for readable logs (works for GitHub runners too).
+    utc_offset = datetime.now() - datetime.utcnow()
+    target_sys_est = target_utc + utc_offset
+    midnight_sys_est = midnight_utc + utc_offset
+
+    print(col_g + "[Phase Shift Established]: " + Fore.RESET + f"{FEEDTIME_MS:.2f} ms.")
+    print(col_g + "[Start Before]: " + Fore.RESET + f"{float(send_start_before_seconds):.3f} second(s) before midnight.")
     print(
         col_g + "[Waiting until ... 🥱]: " + Fore.RESET +
-        f"{target_sys.strftime('%Y-%m-%d %H:%M:%S.%f')} (SYSTEM) "
-        f"== {target_bj.strftime('%Y-%m-%d %H:%M:%S.%f')} ({target_bj_label})"
+        f"{target_utc.strftime('%Y-%m-%d %H:%M:%S.%f')} (UTC) "
+        f"== {target_sys_est.strftime('%Y-%m-%d %H:%M:%S.%f')} (SYSTEM est)"
     )
-    print(col_y + f"[Target]: {target_label}  (midnight_sys={midnight_sys.strftime('%Y-%m-%d %H:%M:%S')})" + Fore.RESET)
+    print(col_y + f"[Target]: China midnight (UTC)={midnight_utc.strftime('%Y-%m-%d %H:%M:%S')} (SYSTEM est={midnight_sys_est.strftime('%Y-%m-%d %H:%M:%S')})" + Fore.RESET)
     print("Do not exit")
 
     while True:
-        now_sys = datetime.now()
-        time_diff = (target_sys - now_sys).total_seconds()
-
-        if time_diff > 1:
-            time.sleep(min(1.0, time_diff - 1))
-        elif now_sys >= target_sys:
-            print(f"It's time: {now_sys.strftime('%Y-%m-%d %H:%M:%S.%f')} (SYSTEM). Starting requests")
+        now_utc = datetime.utcnow()
+        time_diff = (target_utc - now_utc).total_seconds()
+        if time_diff <= 0:
             break
-        else:
-            time.sleep(0.0001)
+        time.sleep(min(0.25, max(0.01, time_diff)))
 
-    return midnight_sys
-
-
-
+    print(f"It's time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')} (SYSTEM). Starting requests")
+    return
 def check_unlock_status(session, cookie_value, device_id):
     try:
         url = "https://sgp-api.buy.mi.com/bbs/api/global/user/bl-switch/state"
