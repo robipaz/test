@@ -3,7 +3,7 @@
 # SIMULATION mode:
 # - SIMULATION=1  : ignore real midnight and use a simulated "China midnight"
 # - SIMULATION=0 : use the normal assumption (China midnight == 18:00 SYSTEM time)
-SIMULATION=1
+SIMULATION=0
 
 # Seconds-based simulation target:
 # When SIMULATION=1, simulated "China midnight" will be: now + SIM_MIDNIGHT_AFTER_SECONDS
@@ -17,11 +17,11 @@ COOKIE_VALUE=BeMdQ36v%2BdEniARencY7T7TXAgEkZG78oId4%2B8Ji3NfSGIJehUHjoajFYWgScy3
 SEND_START_BEFORE_SECONDS=4
 
 # How often to launch a NEW request (seconds). Requests are launched in parallel.
-INTERVAL_SECONDS=0.1
+INTERVAL_SECONDS=0.05
 
 # How long (seconds) to keep launching main requests before stopping.
 RUN_LIMIT_SECONDS=5
 
 # Backward-compat keys (optional; not needed anymore):
-# SIM_MINUTE=0
+# SIM_MINUTE=2
 # START_BEFORE_MINUTES=60
