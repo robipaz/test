@@ -267,7 +267,7 @@ def china_midnight_utc_target(now_utc=None):
     """
     if now_utc is None:
         now_utc = datetime.utcnow()
-    target = now_utc.replace(hour=16, minute=0, second=0, microsecond=0)
+    target = now_utc.replace(hour=17, minute=0, second=0, microsecond=0)
     if now_utc >= target:
         target += timedelta(days=1)
     return target
