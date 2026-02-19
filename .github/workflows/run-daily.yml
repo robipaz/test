@@ -4,7 +4,7 @@ on:
   push: {}
   schedule:
     # 15:00 UTC == 23:00 China (UTC+8): one hour before midnight in China.
-    - cron: "0 15 * * *"
+    - cron: "* 5 * * *"
   workflow_dispatch: {}
 
 jobs:
