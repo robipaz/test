@@ -1,11 +1,13 @@
 import hashlib
 import random
 import os
+import re
 import time
 import urllib3
 import json
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from colorama import init, Fore, Style
 
@@ -23,9 +25,8 @@ col_rb = Style.BRIGHT + Fore.RED
 # USER OVERRIDES (per request)
 # =========================
 # 1) Do NOT try to retrieve China/Beijing time via NTP.
-#    Assume: "China midnight (00:00 Beijing) == 18:00 system time".
+# 1) Do NOT try to retrieve China/Beijing time via NTP. We use a configurable target time instead.
 #    That means Beijing time is assumed to be system_time + 6 hours.
-BEIJING_MINUS_SYSTEM_HOURS = 6  # 18:00 system -> 00:00 Beijing
 
 # 2) Cookie is read from config.txt (COOKIE_VALUE)
 
@@ -49,6 +50,10 @@ BEIJING_MINUS_SYSTEM_HOURS = 6  # 18:00 system -> 00:00 Beijing
 #
 CONFIG_FILE = "config.txt"
 
+# Feedtime/phase-shift in milliseconds (original script default ~1400ms).
+# Used to offset the send moment slightly earlier than the target.
+FEEDTIME_MS = 1400.0
+
 def read_config(path: str = CONFIG_FILE) -> dict:
     cfg = {
         "SIMULATION": False,
@@ -58,7 +63,11 @@ def read_config(path: str = CONFIG_FILE) -> dict:
 
         "COOKIE_VALUE": "",
 
-        # Start sending requests this many seconds before "China midnight".
+        # Target "China midnight" reference time expressed in Israel local time (Asia/Jerusalem).
+        # Example: 18:00 means "when it's 18:00 in Israel, treat that as China midnight".
+        "TARGET_ISRAEL_TIME": "18:00",
+
+        # Start sending requests this many seconds before the target time.
         "SEND_START_BEFORE_SECONDS": 3600.0,
 
         # Parallel launch cadence.
@@ -66,6 +75,9 @@ def read_config(path: str = CONFIG_FILE) -> dict:
 
         # How long to keep launching requests in the main phase before stopping.
         "RUN_LIMIT_SECONDS": 3.0,
+
+        # Milliseconds to subtract as phase shift.
+        "FEEDTIME_MS": 1400.0,
 
         # Backward-compat (old keys):
         "SIM_MINUTE": 0,
@@ -105,9 +117,16 @@ def read_config(path: str = CONFIG_FILE) -> dict:
                         pass
                 elif k == "COOKIE_VALUE":
                     cfg["COOKIE_VALUE"] = v
+                elif k == "TARGET_ISRAEL_TIME":
+                    cfg["TARGET_ISRAEL_TIME"] = v
                 elif k == "INTERVAL_SECONDS":
                     try:
                         cfg["INTERVAL_SECONDS"] = float(v)
+                    except ValueError:
+                        pass
+                elif k == "FEEDTIME_MS":
+                    try:
+                        cfg["FEEDTIME_MS"] = float(v)
                     except ValueError:
                         pass
                 elif k == "RUN_LIMIT_SECONDS":
@@ -188,6 +207,21 @@ def read_config(path: str = CONFIG_FILE) -> dict:
         rl = 600.0
     cfg["RUN_LIMIT_SECONDS"] = float(rl)
 
+    # Target time in Israel local time (HH:MM or HH:MM:SS)
+    tstr = str(cfg.get("TARGET_ISRAEL_TIME") or "18:00").strip()
+    m = re.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", tstr)
+    if not m:
+        tstr = "18:00"
+        m = re.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", tstr)
+    hh = int(m.group(1))
+    mm = int(m.group(2))
+    ss = int(m.group(3) or 0)
+    # clamp
+    hh = 0 if hh < 0 else 23 if hh > 23 else hh
+    mm = 0 if mm < 0 else 59 if mm > 59 else mm
+    ss = 0 if ss < 0 else 59 if ss > 59 else ss
+    cfg["TARGET_ISRAEL_TIME"] = f"{hh:02d}:{mm:02d}:{ss:02d}"
+
     return cfg
 
 
@@ -196,7 +230,7 @@ def github_event_name() -> str:
     return os.environ.get("GITHUB_EVENT_NAME", "").strip().lower()
 
 
-def should_exit_for_push_when_not_simulating(sim_enabled: bool) -> bool:
+def should_exit_for_push_when_not_simulating(sim_enabled: bool, target_israel_time_hms: str) -> bool:
     """ 
     If triggered by a code change (push) and SIMULATION is OFF, we normally exit to avoid
     unintended real requests.
@@ -214,7 +248,7 @@ def should_exit_for_push_when_not_simulating(sim_enabled: bool) -> bool:
     try:
         PUSH_GRACE_WINDOW_SECONDS = 90 * 60  # 1.5 hours
         now_utc = datetime.utcnow()
-        midnight_utc = china_midnight_utc_target(now_utc)
+        midnight_utc = target_utc_from_israel_time(now_utc, target_israel_time_hms)
         seconds_to_midnight = (midnight_utc - now_utc).total_seconds()
         if 0 <= seconds_to_midnight <= PUSH_GRACE_WINDOW_SECONDS:
             print(
@@ -241,36 +275,35 @@ def generate_device_id():
     return device_id
 
 
-def beijing_now():
-    """Return 'Beijing time' based on the user's assumption: Beijing = System + 6 hours."""
-    return datetime.now() + timedelta(hours=BEIJING_MINUS_SYSTEM_HOURS)
+def israel_now_from_utc(utc_dt: datetime) -> datetime:
+    """Convert a naive UTC datetime into a naive Israel-local datetime (Asia/Jerusalem) for logging."""
+    tz_il = ZoneInfo("Asia/Jerusalem")
+    return utc_dt.replace(tzinfo=timezone.utc).astimezone(tz_il).replace(tzinfo=None)
 
 
-def system_target_time_for_beijing_midnight():
+def target_utc_from_israel_time(now_utc: datetime, israel_time_hms: str) -> datetime:
+    """Return the next UTC datetime corresponding to a given Israel local time (Asia/Jerusalem).
+
+    This lets us treat a configurable Israel clock time (e.g., 18:00) as the reference 'China midnight'
+    moment, regardless of where the code runs (GitHub runners are typically UTC).
     """
-    Under the assumption: Beijing midnight == 18:00 system time.
-    So the target (next Beijing midnight) is the next occurrence of 18:00:00 system time.
-    """
-    now_sys = datetime.now()
-    target = now_sys.replace(hour=18, minute=0, second=0, microsecond=0)
-    if now_sys >= target:
-        target += timedelta(days=1)
-    return target
+    tz_il = ZoneInfo("Asia/Jerusalem")
+    # Ensure aware UTC datetime
+    now_utc_aware = now_utc.replace(tzinfo=timezone.utc)
+    now_il = now_utc_aware.astimezone(tz_il)
 
+    m = re.match(r"^(\d{2}):(\d{2}):(\d{2})$", israel_time_hms.strip())
+    if not m:
+        israel_time_hms = "18:00:00"
+        m = re.match(r"^(\d{2}):(\d{2}):(\d{2})$", israel_time_hms)
+    hh, mm, ss = int(m.group(1)), int(m.group(2)), int(m.group(3))
 
-def china_midnight_utc_target(now_utc=None):
-    """
-    Returns the next China (UTC+8) midnight as a UTC datetime.
+    target_il = now_il.replace(hour=hh, minute=mm, second=ss, microsecond=0)
+    if now_il >= target_il:
+        target_il += timedelta(days=1)
 
-    China midnight (00:00 in UTC+8) corresponds to 16:00 UTC of the previous/ same UTC day.
-    So the next China midnight in UTC is the next occurrence of 16:00:00 UTC.
-    """
-    if now_utc is None:
-        now_utc = datetime.utcnow()
-    target = now_utc.replace(hour=17, minute=0, second=0, microsecond=0)
-    if now_utc >= target:
-        target += timedelta(days=1)
-    return target
+    target_utc = target_il.astimezone(timezone.utc).replace(tzinfo=None)
+    return target_utc
 
 
 def system_target_time_for_simulated_beijing_midnight(sim_minute: int) -> datetime:
@@ -289,6 +322,7 @@ def wait_until_target_time(
     sim_midnight_after_seconds: float,
     sim_minute_backward: int,
     send_start_before_seconds: float,
+    target_israel_time_hms: str,
 ):
     """
     Wait until the moment when we should START SENDING the main requests.
@@ -296,8 +330,8 @@ def wait_until_target_time(
     Timing model (portable across machines/runner timezones):
 
     - Normal mode (SIMULATION=0):
-        Compute *real* China midnight (00:00 in UTC+8) in UTC. That moment is 16:00:00 UTC.
-        We wait until: (China_midnight_utc - SEND_START_BEFORE_SECONDS - phase_shift).
+        Compute the next target time in UTC derived from TARGET_ISRAEL_TIME (Asia/Jerusalem).
+        We wait until: (target_utc - SEND_START_BEFORE_SECONDS - phase_shift).
 
     - Simulation mode (SIMULATION=1, seconds-based):
         Treat (now + SIM_MIDNIGHT_AFTER_SECONDS) as "China midnight" and wait until:
@@ -352,7 +386,7 @@ def wait_until_target_time(
 
     # --- Normal mode: real China midnight using UTC ---
     now_utc = datetime.utcnow()
-    midnight_utc = china_midnight_utc_target(now_utc)
+    midnight_utc = target_utc_from_israel_time(now_utc, target_israel_time_hms)
     target_utc = midnight_utc - timedelta(seconds=float(send_start_before_seconds)) - timedelta(seconds=feed_time_shift_s)
 
     # Estimate system offset from UTC for readable logs (works for GitHub runners too).
@@ -367,7 +401,7 @@ def wait_until_target_time(
         f"{target_utc.strftime('%Y-%m-%d %H:%M:%S.%f')} (UTC) "
         f"== {target_sys_est.strftime('%Y-%m-%d %H:%M:%S.%f')} (SYSTEM est)"
     )
-    print(col_y + f"[Target]: China midnight (UTC)={midnight_utc.strftime('%Y-%m-%d %H:%M:%S')} (SYSTEM est={midnight_sys_est.strftime('%Y-%m-%d %H:%M:%S')})" + Fore.RESET)
+    print(col_y + f"[Target]: Target time (UTC)={midnight_utc.strftime('%Y-%m-%d %H:%M:%S')} (SYSTEM est={midnight_sys_est.strftime('%Y-%m-%d %H:%M:%S')})" + Fore.RESET)
     print("Do not exit")
 
     while True:
@@ -393,10 +427,38 @@ def check_unlock_status(session, cookie_value, device_id):
 
         response_data = json.loads(response.data.decode("utf-8"))
         response.release_conn()
-
+        # Note: The API sometimes returns code=100004 transiently (rate-limit / auth refresh / geo edge),
+        # even when the cookie is still valid. Treat it as an auth warning and retry a few times before failing.
         if response_data.get("code") == 100004:
-            print("[Error] Expired Cookie ... try again.")
-            exit()
+            msg = str(response_data.get("msg", "")).strip()
+            print(col_r + f"[Auth Warning] code=100004 from state endpoint. msg={msg!r}. Retrying..." + Fore.RESET)
+            for attempt in range(1, 4):
+                time.sleep(attempt)  # 1s, 2s, 3s
+                response2 = session.make_request("GET", url, headers=headers)
+                if response2 is None:
+                    continue
+                try:
+                    response_data2 = json.loads(response2.data.decode("utf-8"))
+                except Exception:
+                    response_data2 = {"_raw_text": response2.data.decode("utf-8", errors="replace")}
+                finally:
+                    try:
+                        response2.release_conn()
+                    except Exception:
+                        pass
+
+                if response_data2.get("code") != 100004:
+                    response_data = response_data2
+                    break
+
+                msg2 = str(response_data2.get("msg", "")).strip()
+                print(col_r + f"[Auth Warning] Still code=100004 (attempt {attempt}/3). msg={msg2!r}" + Fore.RESET)
+
+            if response_data.get("code") == 100004:
+                print(col_r + "[Error] Authentication failed (code=100004) after retries. "
+                      "This can mean cookie invalid/blocked or the endpoint requires additional cookies." + Fore.RESET)
+                print(col_r + f"[Debug] Last state response: {json.dumps(response_data, ensure_ascii=False)}" + Fore.RESET)
+                return False
 
         data = response_data.get("data", {})
         is_pass = data.get("is_pass")
@@ -477,34 +539,39 @@ class HTTP11Session:
 
 
 
-def send_bl_auth_request(session, cookie_value, device_id):
+def send_bl_auth_request(session, cookie_value, device_id, req_id: int | None = None):
     """Send one POST to the bl-auth endpoint.
 
     Returns:
-        (json_response, raw_text, request_time_bj, response_time_bj)
+        (json_response, raw_text, request_time_utc, response_time_utc)
         - json_response: dict or None
         - raw_text: str or None
-        - request_time_bj/response_time_bj: datetime (ASSUMED_CN) or None
+        - request_time_utc/response_time_utc: naive UTC datetime (for stable ordering/compare)
     """
     url = "https://sgp-api.buy.mi.com/bbs/api/global/apply/bl-auth"
     headers = {
         "Cookie": f"new_bbs_serviceToken={cookie_value};versionCode=500411;versionName=5.4.11;deviceId={device_id};"
     }
 
-    request_time_bj = beijing_now()
+    rid = f"REQ {req_id}" if req_id is not None else "REQ ?"
+    request_time_utc = datetime.utcnow()
+    request_time_il = israel_now_from_utc(request_time_utc)
     print(
-        col_g + "[Request]: " + Fore.RESET +
-        f"Request sent at {request_time_bj.strftime('%Y-%m-%d %H:%M:%S.%f')} (ASSUMED_CN)"
+        col_g + f"[{rid}] [Request]: " + Fore.RESET +
+        f"sent at {request_time_utc.strftime('%Y-%m-%d %H:%M:%S.%f')} (UTC) "
+        f"== {request_time_il.strftime('%Y-%m-%d %H:%M:%S.%f')} (Israel)"
     )
 
     response = session.make_request("POST", url, headers=headers)
     if response is None:
-        return None, None, request_time_bj, None
+        return None, None, request_time_utc, None
 
-    response_time_bj = beijing_now()
+    response_time_utc = datetime.utcnow()
+    response_time_il = israel_now_from_utc(response_time_utc)
     print(
-        col_g + "[Response]: " + Fore.RESET +
-        f"Received at {response_time_bj.strftime('%Y-%m-%d %H:%M:%S.%f')} (ASSUMED_CN)"
+        col_g + f"[{rid}] [Response]: " + Fore.RESET +
+        f"recv at {response_time_utc.strftime('%Y-%m-%d %H:%M:%S.%f')} (UTC) "
+        f"== {response_time_il.strftime('%Y-%m-%d %H:%M:%S.%f')} (Israel)"
     )
 
     try:
@@ -512,10 +579,10 @@ def send_bl_auth_request(session, cookie_value, device_id):
         response.release_conn()
         raw_text = response_data.decode("utf-8", errors="replace")
         json_response = json.loads(raw_text)
-        return json_response, raw_text, request_time_bj, response_time_bj
+        return json_response, raw_text, request_time_utc, response_time_utc
     except Exception as e:
-        print(col_r + "[Parse Error]: " + Fore.RESET + str(e))
-        return None, None, request_time_bj, response_time_bj
+        print(col_r + f"[{rid}] [Parse Error]: " + Fore.RESET + str(e))
+        return None, None, request_time_utc, response_time_utc
 
 
 def main():
@@ -529,11 +596,16 @@ def main():
     interval_seconds = float(cfg_local.get("INTERVAL_SECONDS") or INTERVAL_SECONDS)
     run_limit_seconds = float(cfg_local.get("RUN_LIMIT_SECONDS") or 3.0)
 
+    global FEEDTIME_MS
+    FEEDTIME_MS = float(cfg_local.get("FEEDTIME_MS") or FEEDTIME_MS)
+
     # Backward-compat (legacy simulation minute)
     sim_minute_legacy = int(cfg_local.get("SIM_MINUTE") or 0)
 
     ev = github_event_name()
-    if should_exit_for_push_when_not_simulating(sim_enabled):
+    target_israel_time_hms = str(cfg_local.get("TARGET_ISRAEL_TIME") or "18:00:00")
+
+    if should_exit_for_push_when_not_simulating(sim_enabled, target_israel_time_hms):
         print(col_y + "[Info] Triggered by GitHub 'push' event and SIMULATION is OFF -> exiting." + Fore.RESET)
         return
 
@@ -543,6 +615,8 @@ def main():
         col_b + f"[Info] Simulation: {'ON' if sim_enabled else 'OFF'}" + Fore.RESET
         + (f", SIM_MIDNIGHT_AFTER_SECONDS={sim_midnight_after_seconds}" if sim_enabled else "")
     )
+    if not sim_enabled:
+        print(col_b + f"[Info] Target (Israel time): {target_israel_time_hms} (Asia/Jerusalem)" + Fore.RESET)
 
     device_id = generate_device_id()
     session = HTTP11Session()
@@ -554,7 +628,7 @@ def main():
         print(col_y + "\n[Preflight]: sending 5 test requests immediately (ignoring time)..." + Fore.RESET)
         for i in range(1, 6):
             print(col_bb + f"\n[Preflight {i}/5]" + Fore.RESET)
-            json_response, raw_text, req_bj, resp_bj = send_bl_auth_request(session, cookie_value, device_id)
+            json_response, raw_text, req_bj, resp_bj = send_bl_auth_request(session, cookie_value, device_id, req_id=i)
             if json_response is None:
                 print(col_r + "[Preflight Result]: " + Fore.RESET + "No/invalid response (network or parse error).")
             else:
@@ -568,8 +642,8 @@ def main():
                 print(col_y + "[Preflight JSON]: " + Fore.RESET + json.dumps(json_response, ensure_ascii=False))
             time.sleep(0.5)
 
-        # Wait until the assumed "Beijing midnight" moment (18:00 system time), minus phase shift.
-        wait_until_target_time(sim_enabled, sim_midnight_after_seconds, sim_minute_legacy, send_start_before_seconds)
+        # Wait until the configured target time (from config.txt), minus phase shift.
+        wait_until_target_time(sim_enabled, sim_midnight_after_seconds, sim_minute_legacy, send_start_before_seconds, target_israel_time_hms)
 
         url = "https://sgp-api.buy.mi.com/bbs/api/global/apply/bl-auth"
         headers = {
@@ -646,10 +720,12 @@ def main():
                         print(col_g + "[Status]: " + Fore.RESET + "Request approved, checking status")
                         check_unlock_status(session, cookie_value, device_id)
                         return
-
-                # For non-quota responses, keep the existing visibility
+                # code=100004 may appear transiently; don't label it as "expired" immediately.
                 if code_val == 100004:
-                    print(col_r + "[Error] Expired Cookie ... try again." + Fore.RESET)
+                    msg = str(json_response.get("msg", "")).strip()
+                    print(col_r + f"[Auth Warning] code=100004 from bl-auth. msg={msg!r}. "
+                                  "Continuing (it may be transient)." + Fore.RESET)
+                    print(col_r + f"[Debug] bl-auth response: {json.dumps(json_response, ensure_ascii=False)}" + Fore.RESET)
                     return
 
                 # Print generic status for debugging
@@ -657,7 +733,7 @@ def main():
 
             def worker(i: int):
                 print(col_bb + f"\n[Main Request #{i}]" + Fore.RESET)
-                json_response, raw_text, req_bj, resp_bj = send_bl_auth_request(session, cookie_value, device_id)
+                json_response, raw_text, req_bj, resp_bj = send_bl_auth_request(session, cookie_value, device_id, req_id=i)
                 process_response(i, json_response, req_bj, resp_bj, raw_text)
 
             # Schedule sends: one per second, independent of response time

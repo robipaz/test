@@ -1,27 +1,31 @@
 # General config (in-repo)
 # =================================
 # SIMULATION mode:
-# - SIMULATION=1  : ignore real midnight and use a simulated "China midnight"
-# - SIMULATION=0 : use the normal assumption (China midnight == 18:00 SYSTEM time)
+# - SIMULATION=1 : ignore the real target time and use a simulated "midnight" (now + SIM_MIDNIGHT_AFTER_SECONDS)
+# - SIMULATION=0 : use the real target time computed from TARGET_ISRAEL_TIME (Asia/Jerusalem)
 SIMULATION=0
 
+# Real target time (Israel local time, Asia/Jerusalem):
+# This Israel clock time is treated as the "China midnight" reference moment.
+# Default matches your earlier assumption: China midnight == 18:00 Israel time.
+TARGET_ISRAEL_TIME=18:00
+
 # Seconds-based simulation target:
-# When SIMULATION=1, simulated "China midnight" will be: now + SIM_MIDNIGHT_AFTER_SECONDS
+# When SIMULATION=1, simulated "midnight" will be: now + SIM_MIDNIGHT_AFTER_SECONDS
 SIM_MIDNIGHT_AFTER_SECONDS=120
-FEEDTIME_MS=2000
+
 # Cookie value for 'new_bbs_serviceToken'
-COOKIE_VALUE=Oo3ifmP7LwG8IYmIIz1BKlBdXn3f35zEujUqVnZTYw9vlEW0p0ptk%2BnzXj7HyMP9UVDj6RS5WOGM24jVpRZ30vpGhQlqtd%2BSqaEa2a%2BKziESXF6dbLfkIOlkFn1x56BDdQ5PQd9oKal4AYIiyGkPp4wYIzPBVdfGav%2F6DJ8PkaA%3D
+COOKIE_VALUE=9CRa00QsgS3tiU9N%2BH054ReU0Pn7%2FwX9wzzhcYHaJiyTePDZL9bVcwdsXJqw5PQjkXoYHU0ELgzW%2BREN4rB%2BadDjXcwsRv02ts83imBsIMGI0fhSXjfbpgQC8Fu4Iw6uzqBAByQXVVzUqD3qTzJVwRwEApI9gHZ6RKovWQN7e%2Fo%3D
 
 # Main-phase scheduling (seconds):
-# How many seconds BEFORE "China midnight" to start launching the main requests.
-SEND_START_BEFORE_SECONDS=2
+# How many seconds BEFORE the target time to start launching the main requests.
+SEND_START_BEFORE_SECONDS=3600
 
 # How often to launch a NEW request (seconds). Requests are launched in parallel.
-INTERVAL_SECONDS=0.05
+INTERVAL_SECONDS=1.0
 
 # How long (seconds) to keep launching main requests before stopping.
 RUN_LIMIT_SECONDS=3
 
-# Backward-compat keys (optional; not needed anymore):
-# SIM_MINUTE=0
-# START_BEFORE_MINUTES=60
+# Phase shift (ms) - subtract this many milliseconds from the send moment.
+FEEDTIME_MS=1400

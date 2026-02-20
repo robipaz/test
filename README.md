@@ -22,7 +22,7 @@ Edit `config.txt`:
 
 Notes:
 - If `SIMULATION=0` and the workflow is triggered by a `push`, the script exits immediately (no requests).
-- Normal mode keeps the earlier assumption: **China midnight == 18:00 SYSTEM time** (SYSTEM is the runner's time).
+- Normal mode keeps the earlier assumption: **China midnight == TARGET_ISRAEL_TIME (default 18:00) Israel time (Asia/Jerusalem)** (SYSTEM is the runner's time).
 
 ## Where to see output
 
