@@ -18,13 +18,13 @@ SIM_MIDNIGHT_AFTER_SECONDS=120
 COOKIE_VALUE=tmWYilWB4A6m1Z2u%2BA%2B32UV2Ogut4j2OaBVOF0cRVfbH%2Fcl00s75S3i%2FbaPuxb7Uc3WA8OT6jMEpWgw0cbFCS4GGP1dlX8Q%2B7mxgMc8JVI6n2lRP4CsqaUQf62h%2FpPa%2FGVpaV3wgrwHx6oPHn0YCa%2BE4KBorZGTx17x071Wen9I%3D
 # Main-phase scheduling (seconds):
 # How many seconds BEFORE the target time to start launching the main requests.
-SEND_START_BEFORE_SECONDS=1
+SEND_START_BEFORE_SECONDS=2
 
 # How often to launch a NEW request (seconds). Requests are launched in parallel.
-INTERVAL_SECONDS=0.02
+INTERVAL_SECONDS=0.1
 
 # How long (seconds) to keep launching main requests before stopping.
-RUN_LIMIT_SECONDS=1
+RUN_LIMIT_SECONDS=4
 
 # Phase shift (ms) - subtract this many milliseconds from the send moment.
-FEEDTIME_MS=1000
+FEEDTIME_MS=2000
